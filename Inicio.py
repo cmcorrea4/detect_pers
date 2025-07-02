@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import paho.mqtt.client as mqtt
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import threading
 from collections import defaultdict
 
@@ -43,9 +43,14 @@ GRID_WIDTH = 6   # Número de zonas horizontales
 GRID_HEIGHT = 4  # Número de zonas verticales
 CELL_SIZE = 50   # Tamaño de cada celda en píxeles
 
+def get_colombia_time():
+    """Obtiene la hora actual en Colombia (UTC-5)"""
+    colombia_tz = timezone(timedelta(hours=-5))
+    return datetime.now(colombia_tz)
+
 def add_mqtt_log(message):
-    """Agrega un mensaje al log MQTT con timestamp"""
-    timestamp = datetime.now().strftime('%H:%M:%S')
+    """Agrega un mensaje al log MQTT con timestamp en hora de Colombia"""
+    timestamp = get_colombia_time().strftime('%H:%M:%S')
     log_entry = f"[{timestamp}] {message}"
     st.session_state.mqtt_log.append(log_entry)
     # Mantener solo los últimos 50 mensajes
@@ -70,7 +75,7 @@ def on_message(client, userdata, msg):
     try:
         # Registrar mensaje raw recibido
         raw_payload = msg.payload.decode()
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = get_colombia_time().strftime('%H:%M:%S')
         
         # Agregar a la lista de mensajes raw
         raw_message = {
@@ -89,7 +94,7 @@ def on_message(client, userdata, msg):
         # Decodificar el mensaje MQTT
         data = json.loads(raw_payload)
         st.session_state.mqtt_data = data
-        st.session_state.last_update = datetime.now()
+        st.session_state.last_update = get_colombia_time()
         
         # Marcar como conectado si recibimos datos
         st.session_state.mqtt_connected = True
@@ -189,7 +194,7 @@ def check_mqtt_connection():
     if st.session_state.mqtt_client:
         if not st.session_state.mqtt_connected and st.session_state.last_update:
             # Si recibimos datos en los últimos 30 segundos, consideramos que estamos conectados
-            time_diff = (datetime.now() - st.session_state.last_update).total_seconds()
+            time_diff = (get_colombia_time() - st.session_state.last_update).total_seconds()
             if time_diff < 30:
                 st.session_state.mqtt_connected = True
         
@@ -282,13 +287,6 @@ def main():
     st.sidebar.header("⚙️ Configuración")
     st.sidebar.info(f"🌐 Broker: {MQTT_BROKER}")
     st.sidebar.info(f"📡 Tópico: {MQTT_TOPIC}")
-    st.sidebar.info(f"🔲 Cuadrícula: {GRID_WIDTH}x{GRID_HEIGHT} zonas")
-    
-    # Estado de conexión
-    if st.session_state.mqtt_connected:
-        st.sidebar.success("🟢 Conectado")
-    else:
-        st.sidebar.error("🔴 Desconectado")
     
     # Botón principal para obtener datos MQTT
     col1, col2 = st.columns([1, 2])
@@ -301,7 +299,7 @@ def main():
                 
                 if mqtt_data:
                     st.session_state.mqtt_data = mqtt_data
-                    st.session_state.last_update = datetime.now()
+                    st.session_state.last_update = get_colombia_time()
                     
                     # Procesar detecciones
                     detections = mqtt_data.get('detections', [])
@@ -309,17 +307,18 @@ def main():
                     
                     st.success("✅ Datos recibidos correctamente")
                     
-                    # Mostrar métricas principales
-                    total_people = mqtt_data.get('totalPeople', 0)
-                    st.metric("👥 Total Personas", total_people)
+                    # Mostrar métricas principales - usar solo los datos calculados localmente
+                    total_detected = sum(len(people) for people in st.session_state.detection_grid.values())
+                    active_zones = len(st.session_state.detection_grid)
+                    
+                    st.metric("👥 Personas Detectadas", total_detected)
+                    st.metric("🔲 Zonas Activas", active_zones)
                     
                     # Métricas adicionales si están disponibles
                     if 'avgConfidence' in mqtt_data:
                         st.metric("🎯 Confianza Promedio", f"{mqtt_data['avgConfidence']:.2f}")
                     if 'fps' in mqtt_data:
                         st.metric("⚡ FPS", f"{mqtt_data['fps']:.1f}")
-                    if 'zones' in mqtt_data:
-                        st.metric("🔲 Zonas Activas", mqtt_data['zones'])
                     
                 else:
                     st.warning("⚠️ No se recibieron datos del sensor")
@@ -340,24 +339,14 @@ def main():
         if st.session_state.mqtt_data:
             # Mostrar última actualización
             if st.session_state.last_update:
-                st.caption(f"📅 Última actualización: {st.session_state.last_update.strftime('%H:%M:%S')}")
+                st.caption(f"📅 Última actualización: {st.session_state.last_update.strftime('%H:%M:%S')} (Colombia)")
             
             # Visualización de la cuadrícula principal
             fig = create_detection_grid_visualization()
             st.plotly_chart(fig, use_container_width=True)
             
-            # Información adicional
-            total_detected = sum(len(people) for people in st.session_state.detection_grid.values())
-            active_zones = len(st.session_state.detection_grid)
-            
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                st.metric("Personas Detectadas", total_detected)
-            with col_b:
-                st.metric("Zonas Activas", active_zones)
-            with col_c:
-                density = total_detected / (GRID_WIDTH * GRID_HEIGHT) if total_detected > 0 else 0
-                st.metric("Densidad", f"{density:.2f}")
+            # Información adicional - eliminada para evitar duplicación
+            # Las métricas se muestran solo en la columna izquierda
         
         else:
             st.info("🔄 Presiona 'Obtener Datos de Detección' para ver el estado actual")
@@ -373,10 +362,8 @@ def main():
     if st.sidebar.button("🧪 Probar con datos simulados"):
         # Datos de prueba para detección de personas
         test_data = {
-            'totalPeople': 5,
             'avgConfidence': 0.89,
             'fps': 30.0,
-            'zones': 4,
             'detections': [
                 {'id': 'P001', 'x': 100, 'y': 120, 'confidence': 0.95},
                 {'id': 'P002', 'x': 300, 'y': 200, 'confidence': 0.87},
@@ -386,7 +373,7 @@ def main():
             ]
         }
         st.session_state.mqtt_data = test_data
-        st.session_state.last_update = datetime.now()
+        st.session_state.last_update = get_colombia_time()
         process_detections(test_data['detections'])
         add_mqtt_log("🧪 Datos simulados de detección cargados")
         st.rerun()
