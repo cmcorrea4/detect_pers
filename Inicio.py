@@ -2,13 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 import paho.mqtt.client as mqtt
 import json
 import time
 from datetime import datetime
 import threading
 from collections import defaultdict
+
 
 # Configuración de la página
 st.set_page_config(
@@ -22,7 +22,7 @@ MQTT_BROKER = "broker.mqttdashboard.com"
 MQTT_PORT = 1883
 MQTT_USERNAME = None
 MQTT_PASSWORD = None
-MQTT_TOPIC = "N personas"
+MQTT_TOPIC = "Npersonas"
 
 # Inicializar variables de estado
 if 'mqtt_data' not in st.session_state:
@@ -37,13 +37,11 @@ if 'raw_messages' not in st.session_state:
     st.session_state.raw_messages = []
 if 'mqtt_connected' not in st.session_state:
     st.session_state.mqtt_connected = False
-if 'mqtt_client' not in st.session_state:
-    st.session_state.mqtt_client = None
 
 # Configuración de la cuadrícula de detección
 GRID_WIDTH = 6   # Número de zonas horizontales
 GRID_HEIGHT = 4  # Número de zonas verticales
-CELL_SIZE = 50   # Tamaño de cada zona en píxeles
+CELL_SIZE = 50   # Tamaño de cada celda en píxeles
 
 def add_mqtt_log(message):
     """Agrega un mensaje al log MQTT con timestamp"""
@@ -57,11 +55,9 @@ def add_mqtt_log(message):
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        # Forzar actualización del estado
         st.session_state.mqtt_connected = True
         client.subscribe(MQTT_TOPIC)
-        add_mqtt_log(f"✅ Conectado a broker y suscrito a '{MQTT_TOPIC}'")
-        # Forzar rerun para actualizar la UI
+        add_mqtt_log(f"✅ Conectado a {MQTT_BROKER} y suscrito a {MQTT_TOPIC}")
         try:
             st.rerun()
         except:
@@ -134,8 +130,6 @@ def process_detections(detections):
         y = detection.get('y', 0)
         person_id = detection.get('id', 'unknown')
         confidence = detection.get('confidence', 0)
-        age_group = detection.get('age_group', 'unknown')
-        gender = detection.get('gender', 'unknown')
         
         # Convertir coordenadas de píxel a coordenadas de cuadrícula
         grid_x = min(int(x / VIDEO_WIDTH * GRID_WIDTH), GRID_WIDTH - 1)
@@ -149,8 +143,6 @@ def process_detections(detections):
         st.session_state.detection_grid[cell_key].append({
             'id': person_id,
             'confidence': confidence,
-            'age_group': age_group,
-            'gender': gender,
             'original_x': x,
             'original_y': y
         })
@@ -174,7 +166,7 @@ def get_mqtt_message():
         add_mqtt_log(f"🔄 Conectando a {MQTT_BROKER}:{MQTT_PORT}")
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         client.subscribe(MQTT_TOPIC)
-        add_mqtt_log(f"📋 Suscrito a tópico: '{MQTT_TOPIC}'")
+        add_mqtt_log(f"📋 Suscrito a tópico: {MQTT_TOPIC}")
         client.loop_start()
         
         # Esperar hasta 10 segundos por un mensaje
@@ -195,7 +187,6 @@ def get_mqtt_message():
 def check_mqtt_connection():
     """Verifica el estado de la conexión MQTT"""
     if st.session_state.mqtt_client:
-        # Si tenemos cliente pero no marcado como conectado, verificar si hay datos recientes
         if not st.session_state.mqtt_connected and st.session_state.last_update:
             # Si recibimos datos en los últimos 30 segundos, consideramos que estamos conectados
             time_diff = (datetime.now() - st.session_state.last_update).total_seconds()
@@ -211,48 +202,46 @@ def create_detection_grid_visualization():
     density_matrix = np.zeros((GRID_HEIGHT, GRID_WIDTH))
     hover_text = np.empty((GRID_HEIGHT, GRID_WIDTH), dtype=object)
     
-    # Llenar la matriz con datos de detección
+    # Llenar la matriz con datos de detecciones
     for y in range(GRID_HEIGHT):
         for x in range(GRID_WIDTH):
             cell_key = f"{x},{y}"
             if cell_key in st.session_state.detection_grid:
-                people_count = len(st.session_state.detection_grid[cell_key])
-                density_matrix[y, x] = people_count
+                people_in_zone = st.session_state.detection_grid[cell_key]
+                person_count = len(people_in_zone)
+                density_matrix[y, x] = person_count
                 
-                # Crear texto informativo
-                people_info = st.session_state.detection_grid[cell_key]
-                info_text = f"Zona ({x},{y})<br>Personas: {people_count}<br>"
+                # Crear texto de hover con información de las personas
+                person_info = []
+                for person in people_in_zone:
+                    person_info.append(f"ID: {person['id']} (Conf: {person['confidence']:.2f})")
                 
-                for i, person in enumerate(people_info[:3]):  # Mostrar máximo 3 personas
-                    info_text += f"P{i+1}: {person.get('age_group', 'N/A')} - {person.get('gender', 'N/A')}<br>"
-                
-                if len(people_info) > 3:
-                    info_text += f"... y {len(people_info) - 3} más"
-                
-                hover_text[y, x] = info_text
+                hover_text[y, x] = f"Zona ({x},{y})<br>Personas: {person_count}<br>" + "<br>".join(person_info)
             else:
                 density_matrix[y, x] = 0
-                hover_text[y, x] = f"Zona ({x},{y})<br>Personas: 0"
+                hover_text[y, x] = f"Zona ({x},{y})<br>Personas: 0<br>Estado: Vacía"
     
-    # Crear el gráfico con Plotly usando una escala de colores para densidad
-    max_density = max(1, np.max(density_matrix))
+    # Crear el gráfico con Plotly
+    max_people = np.max(density_matrix) if np.max(density_matrix) > 0 else 1
     
     fig = go.Figure(data=go.Heatmap(
         z=density_matrix,
         text=hover_text,
         hovertemplate='%{text}<extra></extra>',
-        colorscale='Viridis',  # Escala de colores más apropiada para densidad
+        colorscale='Blues',
         showscale=True,
         colorbar=dict(title="Número de Personas"),
-        xgap=4,  # Espacio entre zonas horizontalmente
-        ygap=4   # Espacio entre zonas verticalmente
+        xgap=4,
+        ygap=4,
+        zmin=0,
+        zmax=max_people
     ))
     
     fig.update_layout(
-        title=f"Detección de Personas por Zonas - Cuadrícula {GRID_WIDTH}x{GRID_HEIGHT}",
+        title="Mapa de Detección de Personas por Zona",
         xaxis_title="Zona Horizontal",
         yaxis_title="Zona Vertical",
-        width=1000,
+        width=800,
         height=500,
         xaxis=dict(tickmode='linear', tick0=0, dtick=1),
         yaxis=dict(tickmode='linear', tick0=0, dtick=1, autorange='reversed')
@@ -260,23 +249,54 @@ def create_detection_grid_visualization():
     
     return fig
 
+def create_person_count_chart():
+    """Crea un gráfico de barras con el conteo de personas por zona"""
+    if not st.session_state.detection_grid:
+        return None
+    
+    zones = []
+    counts = []
+    
+    for zone, people in st.session_state.detection_grid.items():
+        zones.append(f"Zona {zone}")
+        counts.append(len(people))
+    
+    fig = go.Figure(data=[
+        go.Bar(x=zones, y=counts, marker_color='lightblue')
+    ])
+    
+    fig.update_layout(
+        title="Conteo de Personas por Zona",
+        xaxis_title="Zona",
+        yaxis_title="Número de Personas",
+        height=400
+    )
+    
+    return fig
+
 def main():
     st.title("👥 Monitor de Detección de Personas")
-    st.markdown("### Visualización en tiempo real de detecciones por zonas")
+    st.markdown("### Sistema de Monitoreo en Tiempo Real")
     
     # Sidebar para configuración
-    st.sidebar.header("Configuración")
-    st.sidebar.info(f"Broker: {MQTT_BROKER}")
-    st.sidebar.info(f"Tópico: '{MQTT_TOPIC}'")
-    st.sidebar.info(f"Cuadrícula: {GRID_WIDTH}x{GRID_HEIGHT} zonas")
+    st.sidebar.header("⚙️ Configuración")
+    st.sidebar.info(f"🌐 Broker: {MQTT_BROKER}")
+    st.sidebar.info(f"📡 Tópico: {MQTT_TOPIC}")
+    st.sidebar.info(f"🔲 Cuadrícula: {GRID_WIDTH}x{GRID_HEIGHT} zonas")
+    
+    # Estado de conexión
+    if st.session_state.mqtt_connected:
+        st.sidebar.success("🟢 Conectado")
+    else:
+        st.sidebar.error("🔴 Desconectado")
     
     # Botón principal para obtener datos MQTT
     col1, col2 = st.columns([1, 2])
     
     with col1:
-        st.subheader("📡 Datos MQTT")
+        st.subheader("📡 Control del Sistema")
         if st.button("🔄 Obtener Datos de Detección", type="primary"):
-            with st.spinner('Obteniendo datos de detección de personas...'):
+            with st.spinner('Obteniendo datos del sistema de detección...'):
                 mqtt_data = get_mqtt_message()
                 
                 if mqtt_data:
@@ -290,10 +310,16 @@ def main():
                     st.success("✅ Datos recibidos correctamente")
                     
                     # Mostrar métricas principales
-                    st.metric("Total Personas", mqtt_data.get('personCount', 0))
-                    st.metric("Adultos", mqtt_data.get('adultCount', 0))
-                    st.metric("Niños", mqtt_data.get('childCount', 0))
-                    st.metric("FPS", mqtt_data.get('fps', 0))
+                    total_people = mqtt_data.get('totalPeople', 0)
+                    st.metric("👥 Total Personas", total_people)
+                    
+                    # Métricas adicionales si están disponibles
+                    if 'avgConfidence' in mqtt_data:
+                        st.metric("🎯 Confianza Promedio", f"{mqtt_data['avgConfidence']:.2f}")
+                    if 'fps' in mqtt_data:
+                        st.metric("⚡ FPS", f"{mqtt_data['fps']:.1f}")
+                    if 'zones' in mqtt_data:
+                        st.metric("🔲 Zonas Activas", mqtt_data['zones'])
                     
                 else:
                     st.warning("⚠️ No se recibieron datos del sensor")
@@ -308,7 +334,7 @@ def main():
             st.success("Monitor limpiado")
     
     with col2:
-        st.subheader("👥 Mapa de Detecciones")
+        st.subheader("🗺️ Mapa de Detección")
         
         # Mostrar datos actuales si están disponibles
         if st.session_state.mqtt_data:
@@ -316,82 +342,74 @@ def main():
             if st.session_state.last_update:
                 st.caption(f"📅 Última actualización: {st.session_state.last_update.strftime('%H:%M:%S')}")
             
-            # Visualización de la cuadrícula
+            # Visualización de la cuadrícula principal
             fig = create_detection_grid_visualization()
             st.plotly_chart(fig, use_container_width=True)
             
-            # Estadísticas adicionales
-            total_people = sum(len(people) for people in st.session_state.detection_grid.values())
-            occupied_zones = len([zone for zone in st.session_state.detection_grid.values() if len(zone) > 0])
+            # Información adicional
+            total_detected = sum(len(people) for people in st.session_state.detection_grid.values())
+            active_zones = len(st.session_state.detection_grid)
             
-            col_stats1, col_stats2, col_stats3 = st.columns(3)
-            with col_stats1:
-                st.metric("Personas Detectadas", total_people)
-            with col_stats2:
-                st.metric("Zonas Ocupadas", occupied_zones)
-            with col_stats3:
-                density = total_people / (GRID_WIDTH * GRID_HEIGHT)
-                st.metric("Densidad Promedio", f"{density:.2f}")
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric("Personas Detectadas", total_detected)
+            with col_b:
+                st.metric("Zonas Activas", active_zones)
+            with col_c:
+                density = total_detected / (GRID_WIDTH * GRID_HEIGHT) if total_detected > 0 else 0
+                st.metric("Densidad", f"{density:.2f}")
         
         else:
             st.info("🔄 Presiona 'Obtener Datos de Detección' para ver el estado actual")
-            st.markdown(f"""
+            st.markdown("""
             **Instrucciones:**
             1. Presiona el botón 'Obtener Datos de Detección'
-            2. Los datos se obtendrán del tópico `{MQTT_TOPIC}`
-            3. La cuadrícula se actualizará automáticamente mostrando la densidad por zonas
+            2. Los datos se obtendrán del tópico `Npersonas`
+            3. El mapa se actualizará automáticamente
             4. Puedes usar el botón 'Probar con datos simulados' para verificar que funciona
             """)
     
     # Botón para probar con datos simulados
     if st.sidebar.button("🧪 Probar con datos simulados"):
-        # Datos de prueba adaptados para detección de personas
+        # Datos de prueba para detección de personas
         test_data = {
-            'personCount': 8,
-            'adultCount': 5,
-            'childCount': 3,
+            'totalPeople': 5,
+            'avgConfidence': 0.89,
             'fps': 30.0,
+            'zones': 4,
             'detections': [
-                {'id': '1', 'x': 100, 'y': 120, 'confidence': 0.95, 'age_group': 'adult', 'gender': 'male'},
-                {'id': '2', 'x': 200, 'y': 150, 'confidence': 0.87, 'age_group': 'child', 'gender': 'female'},
-                {'id': '3', 'x': 350, 'y': 200, 'confidence': 0.92, 'age_group': 'adult', 'gender': 'female'},
-                {'id': '4', 'x': 450, 'y': 180, 'confidence': 0.88, 'age_group': 'adult', 'gender': 'male'},
-                {'id': '5', 'x': 150, 'y': 350, 'confidence': 0.93, 'age_group': 'child', 'gender': 'male'},
-                {'id': '6', 'x': 300, 'y': 380, 'confidence': 0.85, 'age_group': 'adult', 'gender': 'female'},
-                {'id': '7', 'x': 500, 'y': 320, 'confidence': 0.91, 'age_group': 'child', 'gender': 'female'},
-                {'id': '8', 'x': 550, 'y': 250, 'confidence': 0.89, 'age_group': 'adult', 'gender': 'male'}
+                {'id': 'P001', 'x': 100, 'y': 120, 'confidence': 0.95},
+                {'id': 'P002', 'x': 300, 'y': 200, 'confidence': 0.87},
+                {'id': 'P003', 'x': 500, 'y': 150, 'confidence': 0.92},
+                {'id': 'P004', 'x': 200, 'y': 350, 'confidence': 0.88},
+                {'id': 'P005', 'x': 450, 'y': 400, 'confidence': 0.91}
             ]
         }
         st.session_state.mqtt_data = test_data
         st.session_state.last_update = datetime.now()
         process_detections(test_data['detections'])
-        add_mqtt_log("🧪 Datos simulados de personas cargados")
+        add_mqtt_log("🧪 Datos simulados de detección cargados")
         st.rerun()
+    
+    # Gráfico adicional de conteo por zona
+    if st.session_state.detection_grid:
+        st.subheader("📊 Análisis por Zona")
+        chart_fig = create_person_count_chart()
+        if chart_fig:
+            st.plotly_chart(chart_fig, use_container_width=True)
     
     # Mostrar detalles de detecciones si están disponibles
     if st.session_state.mqtt_data and st.session_state.mqtt_data.get('detections'):
         st.subheader("📋 Detalles de Detecciones")
         detections_df = pd.DataFrame(st.session_state.mqtt_data['detections'])
-        st.dataframe(detections_df, use_container_width=True)
         
-        # Análisis estadístico
-        if len(detections_df) > 0:
-            st.subheader("📊 Análisis Estadístico")
-            col_stat1, col_stat2 = st.columns(2)
-            
-            with col_stat1:
-                if 'age_group' in detections_df.columns:
-                    age_counts = detections_df['age_group'].value_counts()
-                    fig_age = px.pie(values=age_counts.values, names=age_counts.index, 
-                                   title="Distribución por Grupo de Edad")
-                    st.plotly_chart(fig_age, use_container_width=True)
-            
-            with col_stat2:
-                if 'gender' in detections_df.columns:
-                    gender_counts = detections_df['gender'].value_counts()
-                    fig_gender = px.bar(x=gender_counts.index, y=gender_counts.values,
-                                      title="Distribución por Género")
-                    st.plotly_chart(fig_gender, use_container_width=True)
+        # Agregar información de zona calculada
+        if not detections_df.empty:
+            detections_df['zona_x'] = (detections_df['x'] / 640 * GRID_WIDTH).astype(int)
+            detections_df['zona_y'] = (detections_df['y'] / 480 * GRID_HEIGHT).astype(int)
+            detections_df['zona'] = detections_df['zona_x'].astype(str) + ',' + detections_df['zona_y'].astype(str)
+        
+        st.dataframe(detections_df, use_container_width=True)
     
     # Monitor MQTT expandible
     with st.expander("📡 Monitor MQTT", expanded=False):
@@ -412,7 +430,7 @@ def main():
                 st.json(st.session_state.mqtt_data)
             else:
                 st.text("No se han recibido mensajes")
-                st.info(f"Esperando mensajes del tópico: **'{MQTT_TOPIC}'**")
+                st.info(f"Esperando mensajes del tópico: **{MQTT_TOPIC}**")
 
 if __name__ == "__main__":
     main()
